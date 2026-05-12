@@ -1,0 +1,12 @@
+PyQt6
+PyQt6-WebEngine
+pyqtgraph
+numpy
+pyzmq
+onnxruntime
+h5py
+matplotlib
+folium
+requests
+psutil
+scipy
