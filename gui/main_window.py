@@ -17,6 +17,7 @@ from gui.components.panel_arabakisli  import ArabakisliPanel
 from gui.components.panel_telsiz_aldatma import TelsizAldatmaPanel
 from gui.components.panel_gps_aldatma import GPSAldatmaPanel
 from gui.components.panel_gns_aldatma import GNSAldatmaPanel
+from gui.components.panel_df           import DirectionFinderPanel
 
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -47,6 +48,13 @@ class _TacticalMap(QWidget):
 
     def set_active(self, active: bool):
         self._active = active
+        self.repaint()
+
+    def wander_fake(self, step: float = 0.03):
+        """Sahte konumu küçük rastgele adımlarla gezdirir (oynak konum simülasyonu)."""
+        fx = min(0.9, max(0.1, self._fake_pos.x() + random.uniform(-step, step)))
+        fy = min(0.9, max(0.1, self._fake_pos.y() + random.uniform(-step, step)))
+        self._fake_pos = QPointF(fx, fy)
         self.repaint()
 
     def _blink(self):
@@ -192,9 +200,23 @@ class MainWindow(QMainWindow):
         self.active_signal_snr   = 0.0
         self.active_signal_idx   = 256
 
+        # Gerçek AI tespiti (state_manager) ile simülasyonu ayırt etmek için:
+        # aynı tespiti tekrar tekrar loglamayalım diye son tespitin anahtarını tutuyoruz.
+        self._last_detection_key = None
+
+        # Yön Bulma (DF) simülasyonu: "gerçek" geliş açısı yavaş gezer (oynak),
+        # ekrana gürültü eklenmiş hali basılır (RMS ~4°). Stabil değil — sahada olduğu gibi.
+        self._true_bearing = random.uniform(0.0, 360.0)
+
         self.timer = QTimer()
         self.timer.timeout.connect(self.simulate_live_data)
         self.timer.start(30)
+
+        # GNSS taktik haritasını state_manager'daki aldatma durumuna bağla
+        # (GPS/GNSS panelleri start/stop'ta state_manager'ı günceller).
+        self._gnss_timer = QTimer()
+        self._gnss_timer.timeout.connect(self._update_tactical_map)
+        self._gnss_timer.start(400)
 
     # ═══════════════════════════════════════════════════════════════════════
     #  NAVİGASYON ÇUBUĞU (ekranlar arası)
@@ -526,8 +548,11 @@ class MainWindow(QMainWindow):
         left_frame.setMaximumWidth(280)
         left_lay = QVBoxLayout(left_frame)
         left_lay.setContentsMargins(6, 6, 6, 6)
+        left_lay.setSpacing(8)
         self.log_panel_widget = SignalLogPanel()
-        left_lay.addWidget(self.log_panel_widget)
+        self.df_panel = DirectionFinderPanel()
+        left_lay.addWidget(self.log_panel_widget, stretch=1)
+        left_lay.addWidget(self.df_panel)
         content_lay.addWidget(left_frame)
 
         # ── ORTA: Harita + Waterfall ─────────────────────────────────
@@ -845,26 +870,72 @@ class MainWindow(QMainWindow):
     # ═══════════════════════════════════════════════════════════════════════
     #  SİMÜLASYON
     # ═══════════════════════════════════════════════════════════════════════
+    def _trigger_detection(self, mod: str, snr: float, conf: float):
+        """Yeni bir sinyal tespitini işler: paneller + log + harita + waterfall zarfı."""
+        self.active_signal_mod   = mod
+        self.active_signal_snr   = snr
+        self.active_signal_idx   = random.randint(50, 460)
+        self.active_signal_timer = 50
+
+        # Yeni sinyal yeni bir yönden geliyor gibi davran (oynak yön)
+        self._true_bearing = random.uniform(0.0, 360.0)
+
+        rx, ry = random.uniform(-8, 8), random.uniform(-8, 8)
+        self.map_widget.add_target(rx, ry)
+
+        self.control_panel_widget.update_ai_results(mod, snr, conf)
+        self.log_panel_widget.add_log(mod, snr, conf)
+
+    def _get_real_detection(self):
+        """state_manager'da gerçek AI tespiti varsa (mod, snr, conf) döndürür, yoksa None.
+
+        main.py çalıştığında InferenceEngine thread'i state_manager'a yazar. GUI tek
+        başına (AI thread'siz) açılırsa state varsayılanda kalır ve None döner -> sim.
+        """
+        if self.state_manager is None:
+            return None
+        try:
+            st = self.state_manager.get_state()
+        except Exception:
+            return None
+        mod = st.get("mod")
+        if not mod or mod in ("Bekleniyor...", "ARANIYOR...", ""):
+            return None
+        return mod, float(st.get("snr", 0.0)), float(st.get("conf", 0.0))
+
+    def _update_tactical_map(self):
+        """GNSS taktik haritasını state_manager'daki GPS/GNSS aldatma durumuna bağlar."""
+        if self.state_manager is None:
+            return
+        try:
+            st = self.state_manager.get_state()
+        except Exception:
+            return
+        active = bool(st.get("gps_active") or st.get("gns_active"))
+        self.tactical_map.set_active(active)
+        # Aldatma aktifken sahte konum gerçekçi biçimde gezsin (oynak konum)
+        if active:
+            self.tactical_map.wander_fake()
+
     def simulate_live_data(self):
         if self.stacked_widget.currentIndex() != 1:
             return
 
-        if random.random() < 0.02:
-            fake_mods = ["BPSK", "QPSK", "8-PSK", "16-QAM", "64-QAM"]
-            self.active_signal_mod = random.choice(fake_mods)
-            self.active_signal_snr = round(random.uniform(5.0, 25.0), 1)
-            conf = round(random.uniform(85.0, 99.9), 1)
-            self.active_signal_idx   = random.randint(50, 460)
-            self.active_signal_timer = 50
-
-            rx, ry = random.uniform(-8, 8), random.uniform(-8, 8)
-            self.map_widget.add_target(rx, ry)
-
-            self.control_panel_widget.update_ai_results(
-                self.active_signal_mod, self.active_signal_snr, conf
-            )
-            self.log_panel_widget.add_log(
-                self.active_signal_mod, self.active_signal_snr, conf
+        # 1) ÖNCELİK: state_manager'daki gerçek AI tespiti. Yoksa simülasyon.
+        real = self._get_real_detection()
+        if real is not None:
+            mod, snr, conf = real
+            key = (mod, round(conf, 1), round(snr, 1))
+            if key != self._last_detection_key:   # sadece yeni/değişen tespitte tetikle
+                self._last_detection_key = key
+                self._trigger_detection(mod, snr, conf)
+        elif random.random() < 0.02:
+            # config.MOD_NAMES ile aynı format (tiresiz) — AI_RECS eşleşmesi için
+            fake_mods = ["BPSK", "QPSK", "8PSK", "16QAM", "64QAM"]
+            self._trigger_detection(
+                random.choice(fake_mods),
+                round(random.uniform(5.0, 25.0), 1),
+                round(random.uniform(85.0, 99.9), 1),
             )
 
         t     = np.linspace(self.time_ptr, self.time_ptr + 10, 512)
@@ -886,8 +957,17 @@ class MainWindow(QMainWindow):
             idx   = self.active_signal_idx
             width = 8 if "QAM" in self.active_signal_mod else 4
             fake_fft[idx - width: idx + width] += self.active_signal_snr / 1.5
+
+            # Yön Bulma: gerçek açı yavaşça gezsin, ekrana gürültülü (RMS~4°) hali bas
+            self._true_bearing = (self._true_bearing + random.uniform(-1.5, 1.5)) % 360
+            shown = (self._true_bearing + random.gauss(0.0, 4.0)) % 360
+            self.df_panel.update_bearing(
+                shown, 4.0, self.active_signal_mod, self.active_signal_snr
+            )
         else:
             fake_iq = noise
+            # Aktif sinyal yoksa DF tarama modunda
+            self.df_panel.set_scanning(True)
 
         self.waterfall_widget.update_plots(fake_iq, fake_fft)
         self.time_ptr += 0.1

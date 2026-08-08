@@ -77,7 +77,19 @@ SEED = 42
 # ============================================================
 # Model bekleyen tensor formatı: (batch, channels, length)
 INPUT_CHANNELS = 2           # I, Q
-INPUT_LENGTH = WINDOW_SIZE   # 6250
+INPUT_LENGTH = WINDOW_SIZE   # 6250 (eğitim penceresi)
+
+# ============================================================
+# INFERENCE / CANLI SDR (data/model.onnx ile uyumlu)
+# ============================================================
+# DİKKAT: Elimizdeki ONNX modelinin (data/model.onnx) 'iq_input' girdisi
+# 2 x 8192'dir. Yukarıdaki WINDOW_SIZE=6250 eğitim tarafından kalmış eski
+# bir değer ve bu modelle UYUŞMUYOR. Canlı çıkarımda gerçek uzunluk her
+# zaman modelden okunur (InferenceEngine bunu dinamik yapar); aşağıdaki
+# sabit sadece buffer/receiver'ın kaç örneklik segment toplayacağını belirler
+# ve modelin beklediği uzunluğa eşit tutulmalıdır.
+# NOT: Model başka bir uzunlukla yeniden eğitilirse burayı güncelleyin.
+SDR_SEGMENT_LEN = 8192       # ZMQ receiver ve CircularBuffer segment uzunluğu
 
 # ============================================================
 # ORTAK NORMALİZASYON FONKSİYONU

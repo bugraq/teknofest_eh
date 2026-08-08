@@ -11,7 +11,8 @@ from gui.main_window import MainWindow
 
 def main():
     # 1. TEMEL BİLEŞENLERİ OLUŞTUR
-    buffer = CircularBuffer(buffer_size=5000, segment_length=1024)
+    # segment_length verilmezse config.SDR_SEGMENT_LEN (8192, modelle uyumlu) kullanılır.
+    buffer = CircularBuffer()
     state_manager = StateManager()
 
     # 2. SDR (DONANIM) HABERLEŞMESİNİ BAŞLAT

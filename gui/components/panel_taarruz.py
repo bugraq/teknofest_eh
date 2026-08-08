@@ -12,12 +12,16 @@ from PyQt6.QtCore import Qt, QTimer, QRectF, QPointF
 from PyQt6.QtGui import QPainter, QPen, QBrush, QColor, QFont, QFontMetrics, QLinearGradient
 
 # ─── AI önerisi tablosu (modülasyon → karıştırma tekniği) ────────────────────
+# NOT: Anahtarlar config.MOD_NAMES ile birebir aynı formatta (tiresiz: 8PSK,
+# 16QAM, 64QAM). Gerçek AI, config formatında etiket ürettiği için tireli
+# ("8-PSK") yazım eşleşme kaybına yol açardı.
 AI_RECS = {
+    "UNKNOWN": "Analiz Sürüyor",
     "BPSK":   "Faz Bozma",
     "QPSK":   "Faz Bozma",
-    "8-PSK":  "Çok Tonlu Karıştırma",
-    "16-QAM": "Gürültü Enjeksiyonu",
-    "64-QAM": "Alt Taşıyıcı Baskı",
+    "8PSK":   "Çok Tonlu Karıştırma",
+    "16QAM":  "Gürültü Enjeksiyonu",
+    "64QAM":  "Alt Taşıyıcı Baskı",
     "AM":     "Genlik Baskılama",
     "FM":     "Frekans Kayması",
     "FSK":    "Frekans Atlama Takibi",

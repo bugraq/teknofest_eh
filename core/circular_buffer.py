@@ -1,12 +1,22 @@
 import numpy as np
 import threading
 
+try:
+    import config
+except ImportError:
+    from .. import config
+
 class CircularBuffer:
-    def __init__(self, buffer_size=5000, segment_length=1024):
+    def __init__(self, buffer_size=500, segment_length=None):
         """
         buffer_size: Hafızada aynı anda tutulacak maksimum paket sayısı
-        segment_length: AI modeline girecek olan IQ veri boyutu (1024)
+        segment_length: AI modeline girecek olan IQ veri boyutu.
+                        Varsayılan config.SDR_SEGMENT_LEN (8192, modelle uyumlu).
+        NOT: segment 8192'ye çıktığı için buffer_size 5000 -> 500 düşürüldü
+        (500 * 2 * 8192 * 4B ≈ 32 MB). Aksi halde ~327 MB RAM ayrılırdı.
         """
+        if segment_length is None:
+            segment_length = config.SDR_SEGMENT_LEN
         # RAM'i şişirmemek için baştan 5000 adetlik yer ayırıyoruz (Pre-allocation)
         # Tip kesinlikle float32 olmalı (Yapay Zeka için)
         self.buffer = np.zeros((buffer_size, 2, segment_length), dtype=np.float32)

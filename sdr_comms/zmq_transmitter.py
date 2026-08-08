@@ -21,6 +21,15 @@ class ZMQTransmitter:
 
     def stop(self):
         self.is_running = False
+        # Thread'in döngüden çıkmasını bekle, sonra soketi/context'i temizle
+        thread = getattr(self, "thread", None)
+        if thread is not None:
+            thread.join(timeout=1.0)
+        try:
+            self.socket.close(linger=0)
+            self.context.term()
+        except Exception:
+            pass
 
     def _transmit_loop(self):
         print(f"[SDR-TX] Taarruz/Jamming yayın portu ({self.port}) aktif...")
