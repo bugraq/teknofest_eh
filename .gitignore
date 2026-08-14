@@ -26,5 +26,17 @@ env.bak/
 venv.bak/
 .idea/
 .vscode/
-data/
+# data/: ONNX modeli repoya DAHIL (klonlayan direkt calistirabilsin).
+# Sadece ham/olcum verileri ve uretilen ciktilar haric tutulur.
+data/*.h5
+data/*.iq
+data/*.bin
+data/*.wav
+data/spoof_audio/*
+!data/spoof_audio/.gitkeep
+data/gps_ephemeris/*
+!data/gps_ephemeris/.gitkeep
+data/models/*
+!data/models/.gitkeep
+
 *.log

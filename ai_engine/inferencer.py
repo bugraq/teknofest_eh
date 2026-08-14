@@ -1,5 +1,6 @@
 import time
 import threading
+from pathlib import Path
 import numpy as np
 import onnxruntime as ort
 from ai_engine.preprocessor import Preprocessor
@@ -8,6 +9,11 @@ try:
     from .. import config
 except ImportError:
     import config
+
+
+# Model yolu proje kokune gore cozulur; boylece uygulama hangi klasorden
+# calistirilirsa calistirilsin (IDE, farkli cwd, kisayol) model bulunur.
+DEFAULT_MODEL_PATH = Path(__file__).resolve().parent.parent / "data" / "model.onnx"
 
 
 def _softmax(logits: np.ndarray) -> np.ndarray:
@@ -19,7 +25,8 @@ def _softmax(logits: np.ndarray) -> np.ndarray:
 
 
 class InferenceEngine:
-    def __init__(self, circular_buffer, state_manager, model_path="data/model.onnx"):
+    def __init__(self, circular_buffer, state_manager, model_path=None):
+        model_path = str(model_path or DEFAULT_MODEL_PATH)
         self.buffer = circular_buffer
         self.state_manager = state_manager
         self.is_running = False
