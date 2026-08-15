@@ -4,6 +4,8 @@ from pathlib import Path
 import numpy as np
 import onnxruntime as ort
 from ai_engine.preprocessor import Preprocessor
+from ed_module.dsp_utils import perform_fft
+from ed_module.signal_detector import SignalDetector
 
 try:
     from .. import config
@@ -53,13 +55,23 @@ class InferenceEngine:
             out_names = [o.name for o in self.ort_session.get_outputs()]
             self.mod_output_name = "mod_logits" if "mod_logits" in out_names else out_names[0]
 
+            # Band başlığı da modelde VAR (433/868/915/2.4G). Önceden hiç okunmuyordu,
+            # bu yüzden frekans bilgisi modelden değil arayüzün simülasyonundan geliyordu.
+            self.band_output_name = "band_logits" if "band_logits" in out_names else None
+
             print(f"[AI ENGINE] ONNX Modeli yüklendi! Girdi uzunluğu={model_len}, "
-                  f"çıktılar={out_names}, mod başlığı='{self.mod_output_name}'")
+                  f"çıktılar={out_names}, mod başlığı='{self.mod_output_name}', "
+                  f"band başlığı='{self.band_output_name}'")
         except Exception as e:
             print(f"[AI ENGINE UYARISI] {model_path} yüklenemedi ({e}). "
                   f"Simülasyon (Fake AI) modunda çalışacak.")
             self.use_fake_ai = True  # Elimizde henüz gerçek model yoksa kod çökmesin diye
+            self.band_output_name = None
             self.preprocessor = Preprocessor(window_size=config.SDR_SEGMENT_LEN)
+
+        # Spektrum tespiti: frekans/SNR artık uydurulmuyor, ham IQ'dan ölçülüyor.
+        self.detector = SignalDetector()
+        self._band_mismatch = 0
 
     def start(self):
         """ Yapay zekayı ayrı bir iş parçacığında (Thread) başlatır """
@@ -76,15 +88,34 @@ class InferenceEngine:
             raw_data = self.buffer.pop()
             
             if raw_data is not None:
-                # 2. Veriyi modele hazırla
+                # 2. SPEKTRUM: önce sinyal var mı ona bak (ham IQ'dan ölçüm).
+                #    Sinyal yoksa modele hiç sormuyoruz — gürültüye bakan model
+                #    yine de bir sınıf döndürür ve ekranda hayalet tespit oluşurdu.
+                freqs, psd_db = perform_fft(raw_data, config.SAMPLE_RATE,
+                                            fft_size=config.FFT_SIZE)
+                det = self.detector.detect_energy(psd_db, freqs)
+
+                # Waterfall'ın çizeceği gerçek spektrum + tespit sonucu
+                self.state_manager.update_spectrum(psd_db, det)
+
+                if not det.present:
+                    # Sinyal yok: ED durumunu boşa çek, ekran "SİNYAL YOK" göstersin
+                    self.state_manager.clear_ed_state()
+                    continue
+
+                # 3. Veriyi modele hazırla
                 processed_data = self.preprocessor.process(raw_data)
-                
-                # 3. Modele Tahmin Yaptır
+
+                # 4. Modele Tahmin Yaptır
                 if not self.use_fake_ai:
                     # GERÇEK ONNX ÇIKARIMI (Işık Hızında)
                     # Model batch=1'e sabit; preprocessor zaten (1, 2, N) veriyor.
+                    wanted = [self.mod_output_name]
+                    if self.band_output_name:
+                        wanted.append(self.band_output_name)
+
                     ort_inputs = {self.input_name: processed_data}
-                    ort_outs = self.ort_session.run([self.mod_output_name], ort_inputs)
+                    ort_outs = self.ort_session.run(wanted, ort_inputs)
 
                     # Model ham LOGIT döndürür -> önce softmax, sonra güven skoru.
                     logits = np.asarray(ort_outs[0])[0]
@@ -93,9 +124,30 @@ class InferenceEngine:
                     confidence = float(probabilities[class_idx]) * 100
                     detected_mod = self.classes[class_idx]
 
-                    # NOT: Modelde SNR başlığı YOK. SNR şimdilik tahmini/simülasyon.
-                    # Gerçek SNR istenirse ED tarafında ayrı hesaplanmalı.
-                    estimated_snr = round(np.random.uniform(5, 20), 1)
+                    # BAND: her zaman ÖLÇÜMDEN gelir (SDR merkez frekansı + FFT ofseti),
+                    # modelden DEĞİL.
+                    #
+                    # Modelde band_logits başlığı var ama ona güvenilemez: baseband
+                    # IQ örnekleri merkez frekans bilgisi TAŞIMAZ — 915 MHz'den de
+                    # 2.4 GHz'den de alsanız karıştırıcıdan sonraki örnekler aynı
+                    # görünür. O başlık eğitim setindeki tesadüfi korelasyonu
+                    # öğrenmiş durumda ve sahada yanlış band raporluyor.
+                    # Merkez frekans bir DONANIM ayarıdır: config.SDR_CENTER_FREQ_HZ.
+                    band_name = det.band_name
+
+                    if self.band_output_name and len(ort_outs) > 1:
+                        band_probs = _softmax(np.asarray(ort_outs[1])[0])
+                        model_band = config.BAND_NAMES.get(int(np.argmax(band_probs)), "?")
+                        if model_band != band_name:
+                            self._band_mismatch += 1
+                            # Sürekli uyarı basıp konsolu boğmayalım
+                            if self._band_mismatch in (1, 50) or self._band_mismatch % 500 == 0:
+                                print(f"[AI ENGINE] Model bandı '{model_band}' dedi, "
+                                      f"ölçüm '{band_name}'. Ölçüm kullanılıyor. "
+                                      f"(uyuşmazlık #{self._band_mismatch})")
+
+                    # SNR artık ölçülüyor: tepe gücü - gürültü tabanı (dB)
+                    estimated_snr = round(det.snr_db, 1)
 
                 else:
                     # SİMÜLASYON (Model yoksa test için rastgele sonuç üretir)
@@ -104,11 +156,15 @@ class InferenceEngine:
                     sim_classes = [c for c in self.classes if c != "UNKNOWN"]
                     detected_mod = np.random.choice(sim_classes)
                     confidence = round(np.random.uniform(75.0, 99.9), 1)
-                    estimated_snr = round(np.random.uniform(-5, 20), 1)
+                    estimated_snr = round(det.snr_db, 1)
+                    band_name = det.band_name
                     time.sleep(0.5) # Yapay zeka hesaplıyormuş gibi bekle
 
-                # 4. Çıkan sonucu Sistemin Hafızasına (State Manager) yaz!
-                self.state_manager.update_ed_state(detected_mod, estimated_snr, confidence)
+                # 5. Çıkan sonucu Sistemin Hafızasına (State Manager) yaz!
+                self.state_manager.update_ed_state(
+                    detected_mod, estimated_snr, confidence,
+                    freq_hz=det.freq_hz, band=band_name,
+                )
                 
             else:
                 # Eğer depoda okunacak veri kalmadıysa CPU'yu yorma, biraz dinlen

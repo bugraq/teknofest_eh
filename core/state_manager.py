@@ -1,5 +1,13 @@
 import threading
 
+import numpy as np
+
+try:
+    import config
+except ImportError:
+    from .. import config
+
+
 class StateManager:
     def __init__(self):
         self.lock = threading.Lock()
@@ -8,6 +16,17 @@ class StateManager:
         self.current_modulation = "Bekleniyor..."
         self.current_snr = 0.0
         self.ai_confidence = 0.0
+
+        # Tespit edilen sinyalin ÖLÇÜLEN frekansı (uydurma değil, FFT tepesinden)
+        self.detected_freq_hz = 0.0
+        self.detected_band = "—"
+
+        # --- Canlı Spektrum (waterfall bunu çizer) ---
+        self.signal_present = False
+        self.spectrum_db = None        # (FFT_SIZE,) dB, SDR'dan gelen gerçek spektrum
+        self.spectrum_peak_bin = 0     # Tespit edilen tepenin bin indeksi
+        self.noise_floor_db = 0.0
+        self.has_live_data = False     # SDR'dan bir kez bile veri geldi mi?
 
         # --- ET (Elektronik Taarruz) Durumu ---
         self.jamming_active = False
@@ -27,12 +46,42 @@ class StateManager:
         self.gns_spoof_pos_offset_m  = 0.0
         self.gns_spoof_time_offset_ms = 0.0
 
-    def update_ed_state(self, mod, snr, conf):
+    def update_ed_state(self, mod, snr, conf, freq_hz=None, band=None):
         """ Yapay Zeka (AI) modülü bu fonksiyonu kullanarak kararını sisteme yazar """
         with self.lock:
             self.current_modulation = mod
             self.current_snr = snr
             self.ai_confidence = conf
+            if freq_hz is not None:
+                self.detected_freq_hz = float(freq_hz)
+            if band is not None:
+                self.detected_band = band
+
+    def clear_ed_state(self):
+        """
+        Spektrumda sinyal yokken çağrılır: ED göstergeleri boşa döner.
+
+        Bu olmadan son tespit ekranda asılı kalır ve sinyal kesildikten sonra
+        da 'tespit var' gibi görünür.
+        """
+        with self.lock:
+            self.current_modulation = "SİNYAL YOK"
+            self.current_snr = 0.0
+            self.ai_confidence = 0.0
+            self.detected_freq_hz = 0.0
+            self.detected_band = "—"
+
+    def update_spectrum(self, psd_db, detection):
+        """
+        ED motoru her spektrum karesinde çağırır. Waterfall/IQ ekranı buradan
+        beslenir — artık sahte FFT üretilmiyor.
+        """
+        with self.lock:
+            self.spectrum_db = np.asarray(psd_db, dtype=np.float32)
+            self.signal_present = bool(detection.present)
+            self.spectrum_peak_bin = int(detection.bin_index)
+            self.noise_floor_db = float(detection.noise_floor_db)
+            self.has_live_data = True
 
     def update_et_state(self, active, freq, jam_type):
         """ Arayüzdeki (GUI) butonlara basıldığında taarruz durumu güncellenir """
@@ -67,6 +116,14 @@ class StateManager:
                 "mod":  self.current_modulation,
                 "snr":  self.current_snr,
                 "conf": self.ai_confidence,
+                # ED — ölçülen frekans/band ve canlı spektrum
+                "detected_freq_hz": self.detected_freq_hz,
+                "detected_band":    self.detected_band,
+                "signal_present":   self.signal_present,
+                "spectrum_db":      self.spectrum_db,
+                "peak_bin":         self.spectrum_peak_bin,
+                "noise_floor":      self.noise_floor_db,
+                "has_live_data":    self.has_live_data,
                 # ET Taarruz
                 "jam_active": self.jamming_active,
                 "freq":       self.target_freq,

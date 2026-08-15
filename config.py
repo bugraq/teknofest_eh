@@ -91,6 +91,38 @@ INPUT_LENGTH = WINDOW_SIZE   # 6250 (eğitim penceresi)
 # NOT: Model başka bir uzunlukla yeniden eğitilirse burayı güncelleyin.
 SDR_SEGMENT_LEN = 8192       # ZMQ receiver ve CircularBuffer segment uzunluğu
 
+# SDR'ın o an AYARLI olduğu merkez frekans (Hz).
+# Sistem bunu veriden ÇIKARAMAZ — donanıma ne yazdıysanız buraya da o yazılmalı.
+# Ekranda gösterilen mutlak frekans = SDR_CENTER_FREQ_HZ + (FFT'den bulunan ofset).
+# Pluto'yu 2.4 GHz'e alırsanız burayı da 2_400_000_000.0 yapın.
+SDR_CENTER_FREQ_HZ = 915_000_000.0
+
+# Spektrum / tespit
+FFT_SIZE = 512               # Waterfall ve tepe tespiti için FFT nokta sayısı
+DETECTION_THRESHOLD_DB = 8.0 # Gürültü tabanının kaç dB üstü "sinyal var" sayılsın
+
+# SİMÜLASYON ANAHTARI
+# False (varsayılan): arayüz SADECE SDR'dan gerçek veri geldiğinde tespit gösterir.
+#   Veri yoksa ekran "SİNYAL YOK" durumunda bekler — uydurma tespit ÜRETİLMEZ.
+# True: donanım yokken demo/geliştirme için sahte sinyal akıtır.
+# SAHADA/YARIŞMADA HER ZAMAN False OLMALI.
+SIMULATION_MODE = False
+
+# Band ID -> temsili merkez frekans (FC_TO_BAND'in tersi)
+BAND_TO_FC = {b: fc for fc, b in FC_TO_BAND.items() if b != 255}
+
+
+def fc_to_band(fc_hz: float, tolerance_hz: float = 20e6) -> int:
+    """Merkez frekansı en yakın tanımlı banda eşler. Hiçbiri yakın değilse 255."""
+    best, best_diff = 255, tolerance_hz
+    for ref_fc, band in FC_TO_BAND.items():
+        if band == 255:
+            continue
+        diff = abs(fc_hz - ref_fc)
+        if diff <= best_diff:
+            best, best_diff = band, diff
+    return best
+
 # ============================================================
 # ORTAK NORMALİZASYON FONKSİYONU
 # ============================================================

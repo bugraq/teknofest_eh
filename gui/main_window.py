@@ -19,6 +19,11 @@ from gui.components.panel_gps_aldatma import GPSAldatmaPanel
 from gui.components.panel_gns_aldatma import GNSAldatmaPanel
 from gui.components.panel_df           import DirectionFinderPanel
 
+try:
+    import config
+except ImportError:
+    from .. import config
+
 
 # ─────────────────────────────────────────────────────────────────────────────
 #  TAKTİK HARİTA WİDGETI  (GNSS ekranı için)
@@ -870,11 +875,15 @@ class MainWindow(QMainWindow):
     # ═══════════════════════════════════════════════════════════════════════
     #  SİMÜLASYON
     # ═══════════════════════════════════════════════════════════════════════
-    def _trigger_detection(self, mod: str, snr: float, conf: float):
+    def _trigger_detection(self, mod: str, snr: float, conf: float, peak_bin=None):
         """Yeni bir sinyal tespitini işler: paneller + log + harita + waterfall zarfı."""
         self.active_signal_mod   = mod
         self.active_signal_snr   = snr
-        self.active_signal_idx   = random.randint(50, 460)
+        # Frekans konumu: gerçek tespit varsa FFT tepesinin bin indeksi, yoksa
+        # (sadece simülasyon modunda) rastgele. Eskiden her zaman rastgeleydi —
+        # gerçek sinyal gelse bile waterfall'daki yer uydurma çıkıyordu.
+        self.active_signal_idx   = (int(peak_bin) if peak_bin is not None
+                                    else random.randint(50, 460))
         self.active_signal_timer = 50
 
         # Yeni sinyal yeni bir yönden geliyor gibi davran (oynak yön)
@@ -899,9 +908,13 @@ class MainWindow(QMainWindow):
         except Exception:
             return None
         mod = st.get("mod")
-        if not mod or mod in ("Bekleniyor...", "ARANIYOR...", ""):
+        if not mod or mod in ("Bekleniyor...", "ARANIYOR...", "SİNYAL YOK", ""):
             return None
-        return mod, float(st.get("snr", 0.0)), float(st.get("conf", 0.0))
+        # Spektrumda sinyal yoksa tespit de yok say
+        if not st.get("signal_present", False):
+            return None
+        return (mod, float(st.get("snr", 0.0)), float(st.get("conf", 0.0)),
+                st.get("peak_bin"), float(st.get("detected_freq_hz", 0.0)))
 
     def _update_tactical_map(self):
         """GNSS taktik haritasını state_manager'daki GPS/GNSS aldatma durumuna bağlar."""
@@ -917,26 +930,79 @@ class MainWindow(QMainWindow):
         if active:
             self.tactical_map.wander_fake()
 
+    def _get_live_spectrum(self):
+        """SDR'dan gelen gerçek (IQ, FFT) çiftini döndürür, veri yoksa None."""
+        if self.state_manager is None or self.buffer is None:
+            return None
+        try:
+            st = self.state_manager.get_state()
+        except Exception:
+            return None
+        if not st.get("has_live_data"):
+            return None
+
+        psd = st.get("spectrum_db")
+        # peek_latest: AI motorunun kuyruğunu tüketmeden en son segmenti oku
+        iq = self.buffer.peek_latest()
+        if psd is None or iq is None:
+            return None
+
+        # dB spektrumu waterfall'ın 0-10 renk aralığına taşı (gürültü tabanı = 0)
+        floor = float(st.get("noise_floor", np.median(psd)))
+        fft_disp = np.clip((np.asarray(psd) - floor) / 3.0, 0.0, 10.0)
+
+        # IQ eğrisi: I kanalı, ±3 aralığına sığsın diye normalize
+        i_ch = np.asarray(iq)[0][:512]
+        peak = np.max(np.abs(i_ch))
+        if peak > 1e-9:
+            i_ch = i_ch / peak * 2.5
+        return i_ch, fft_disp
+
     def simulate_live_data(self):
         if self.stacked_widget.currentIndex() != 1:
             return
 
-        # 1) ÖNCELİK: state_manager'daki gerçek AI tespiti. Yoksa simülasyon.
+        # 1) ÖNCELİK: state_manager'daki gerçek AI tespiti.
         real = self._get_real_detection()
         if real is not None:
-            mod, snr, conf = real
-            key = (mod, round(conf, 1), round(snr, 1))
+            mod, snr, conf, peak_bin, freq_hz = real
+            key = (mod, round(conf, 1), round(snr, 1), peak_bin)
             if key != self._last_detection_key:   # sadece yeni/değişen tespitte tetikle
                 self._last_detection_key = key
-                self._trigger_detection(mod, snr, conf)
-        elif random.random() < 0.02:
-            # config.MOD_NAMES ile aynı format (tiresiz) — AI_RECS eşleşmesi için
+                self._trigger_detection(mod, snr, conf, peak_bin=peak_bin)
+        elif config.SIMULATION_MODE and random.random() < 0.02:
+            # SADECE simülasyon modunda (config.SIMULATION_MODE = True).
+            # Sahada bu kapalıdır: sinyal gelmeden ekranda tespit BELİRMEZ.
             fake_mods = ["BPSK", "QPSK", "8PSK", "16QAM", "64QAM"]
             self._trigger_detection(
                 random.choice(fake_mods),
                 round(random.uniform(5.0, 25.0), 1),
                 round(random.uniform(85.0, 99.9), 1),
             )
+
+        # 2) SPEKTRUM: gerçek SDR verisi varsa onu çiz.
+        live = self._get_live_spectrum()
+        if live is not None:
+            real_iq, real_fft = live
+            self.waterfall_widget.update_plots(real_iq, real_fft)
+            if self.active_signal_timer > 0:
+                self.active_signal_timer -= 1
+                self._true_bearing = (self._true_bearing + random.uniform(-1.5, 1.5)) % 360
+                shown = (self._true_bearing + random.gauss(0.0, 4.0)) % 360
+                self.df_panel.update_bearing(
+                    shown, 4.0, self.active_signal_mod, self.active_signal_snr
+                )
+            else:
+                self.df_panel.set_scanning(True)
+            self.time_ptr += 0.1
+            return
+
+        # 3) Gerçek veri yok. Simülasyon kapalıysa ekranı BOŞ/sessiz tut —
+        #    açılışta uydurma dalga akmasın diye.
+        if not config.SIMULATION_MODE:
+            self.waterfall_widget.update_plots(np.zeros(512), np.zeros(512))
+            self.df_panel.set_scanning(True)
+            return
 
         t     = np.linspace(self.time_ptr, self.time_ptr + 10, 512)
         noise = np.random.normal(0, 0.5, 512)

@@ -46,3 +46,22 @@ class CircularBuffer:
             data = self.buffer[self.tail].copy() # Veriyi al
             self.tail = (self.tail + 1) % self.buffer_size # Kuyruğu ilerlet
             return data
+
+    def peek_latest(self):
+        """
+        En son gelen segmenti kuyruğu İLERLETMEDEN döndürür (yoksa None).
+
+        Arayüz (waterfall/IQ çizimi) bunu kullanır. pop() kullansaydı AI motoruyla
+        aynı veriyi paylaşamaz, birbirlerinin paketlerini çalarlardı: GUI'nin çektiği
+        her segment modele hiç ulaşmazdı. peek okuma yapar, tüketmez.
+        """
+        with self.lock:
+            if self.head == self.tail:
+                return None  # Hiç veri gelmemiş
+            latest = (self.head - 1) % self.buffer_size
+            return self.buffer[latest].copy()
+
+    def has_data(self) -> bool:
+        """Depoda AI'ın işleyebileceği bekleyen veri var mı?"""
+        with self.lock:
+            return self.head != self.tail

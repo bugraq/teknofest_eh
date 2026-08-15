@@ -83,10 +83,42 @@ sistemde ayrıca kurulu olmalı.
 
 ## 5. Yapılandırma
 
-`config.py` eğitim ve çıkarım tarafının **ortak** ayar dosyasıdır: örnekleme hızı,
-normalizasyon, sınıf isimleri, bant eşlemesi ve SDR segment uzunluğu buradadır.
+`config.py` eğitim ve çıkarım tarafının **ortak** ayar dosyasıdır. Sahada
+çalıştırmadan önce **iki ayarı mutlaka kontrol edin**:
 
-> Buradaki sinyal/normalizasyon ayarlarını değiştirirsen model yeniden eğitilmelidir.
+### `SDR_CENTER_FREQ_HZ` — SDR'ı hangi frekansa ayarladıysanız
+
+```python
+SDR_CENTER_FREQ_HZ = 915_000_000.0   # Pluto 2.4 GHz'deyse: 2_400_000_000.0
+```
+
+Bu değer **elle** girilir, çünkü sistem bunu veriden çıkaramaz: Pluto karıştırıcıdan
+sonra baseband örnek verir, bu örnekler merkez frekans bilgisi **taşımaz**. 915 MHz'den
+de 2.4 GHz'den de alsanız örnekler aynı görünür.
+
+Ekranda gösterilen mutlak frekans = `SDR_CENTER_FREQ_HZ` + (FFT'den ölçülen ofset).
+Yani donanımı 2.4 GHz'e alıp burayı 915 MHz'de bırakırsanız **frekans yanlış gösterilir**.
+
+> Modelde bir `band_logits` çıkışı var ama **kullanılmıyor**. Yukarıdaki sebeple o
+> başlık bandı gerçekten bilemez, eğitim setindeki tesadüfi korelasyonu öğrenmiştir.
+> Band her zaman ölçümden gelir. Model farklı bir band söylerse konsola uyarı düşer.
+
+### `SIMULATION_MODE` — sahada her zaman `False`
+
+```python
+SIMULATION_MODE = False
+```
+
+`False` (varsayılan): arayüz **sadece** SDR'dan gerçek veri geldiğinde tespit gösterir.
+Veri yokken ekran boş kalır, DF tarama modunda bekler — uydurma tespit üretilmez.
+
+`True`: donanım yokken demo/geliştirme için sahte sinyal akıtır. Yarışmada açık
+unutulursa ekranda gerçek olmayan tespitler akar.
+
+Diğer ayarlar (örnekleme hızı, normalizasyon, sınıf isimleri, segment uzunluğu) da
+bu dosyadadır.
+
+> Sinyal/normalizasyon ayarlarını değiştirirseniz model yeniden eğitilmelidir.
 
 ## 6. Klasör yapısı
 
@@ -108,6 +140,9 @@ data/              ONNX modeli (ham IQ kayıtları repoya dahil değildir)
 | Belirti | Sebep |
 |---------|-------|
 | `[AI ENGINE UYARISI] ... yüklenemedi` | `data/model.onnx.data` eksik ya da `onnxruntime` kurulu değil |
-| Pencere açılıyor, ED paneli boş | GNU Radio 5555'ten yayın yapmıyor |
+| Pencere açılıyor, ED paneli boş | GNU Radio 5555'ten yayın yapmıyor (beklenen davranış — sinyal gelince dolar) |
+| Frekans yanlış gösteriliyor | `config.SDR_CENTER_FREQ_HZ` donanımdaki merkez frekansla aynı değil |
+| Açılışta rastgele tespitler akıyor | `config.SIMULATION_MODE = True` kalmış, `False` yapın |
+| Sinyal var ama tespit gelmiyor | SNR eşiği yüksek olabilir: `config.DETECTION_THRESHOLD_DB` düşürün |
 | `ModuleNotFoundError: PyQt6` | Sanal ortam aktif değil ya da `pip install -r requirements.txt` çalıştırılmadı |
 | Harita paneli boş | `PyQt6-WebEngine` kurulu değil |
