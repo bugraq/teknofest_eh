@@ -101,6 +101,33 @@ SDR_CENTER_FREQ_HZ = 915_000_000.0
 FFT_SIZE = 512               # Waterfall ve tepe tespiti için FFT nokta sayısı
 DETECTION_THRESHOLD_DB = 8.0 # Gürültü tabanının kaç dB üstü "sinyal var" sayılsın
 
+# ============================================================
+# COĞRAFİ REFERANSLAR
+# ============================================================
+# Sistemin kurulu olduğu yer (GPS alıcı fix veremezse bu kullanılır).
+HOME_NAME = "Elazığ"
+HOME_LAT  = 38.6748
+HOME_LON  = 39.2226
+HOME_ALT  = 1067.0
+
+# GPS aldatmada sahte konumun sürükleneceği HEDEF.
+# Yakın bir nokta seçilirse aldatma ekranda fark edilmez; bilinçli olarak
+# uzak bir şehir seçiliyor ki kayma net görünsün (Elazığ -> İstanbul ~1000 km).
+SPOOF_TARGET_NAME = "İstanbul"
+SPOOF_TARGET_LAT  = 41.0082
+SPOOF_TARGET_LON  = 28.9784
+
+# Sahte konum hedefe ne kadar sürede varsın (saniye). Küçültürsen hızlanır.
+SPOOF_DRIFT_DURATION_S = 120.0
+
+# ============================================================
+# KONUM BULMA HARİTASI
+# ============================================================
+# Haritanın kapsadığı alanın kenar uzunluğu (metre). 1000 m = 1 km².
+# Geniş harita (şehir ölçeği) hedefin kaydığını göstermez; dar alanda
+# konum hatası gözle görülür.
+MAP_AREA_SIZE_M = 1000.0
+
 # SİMÜLASYON ANAHTARI
 # False (varsayılan): arayüz SADECE SDR'dan gerçek veri geldiğinde tespit gösterir.
 #   Veri yoksa ekran "SİNYAL YOK" durumunda bekler — uydurma tespit ÜRETİLMEZ.

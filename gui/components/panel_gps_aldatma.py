@@ -2,7 +2,14 @@
 GPS Aldatma (Spoofing) Kontrol Paneli — kompakt versiyon
 """
 
+import math
 import random
+
+try:
+    import config
+except ImportError:
+    from ... import config
+
 from PyQt6.QtWidgets import (
     QWidget, QVBoxLayout, QHBoxLayout, QLabel, QPushButton,
     QSlider, QGroupBox, QGridLayout, QCheckBox, QSpinBox,
@@ -103,9 +110,14 @@ class _CoordDisplay(QWidget):
 # ─── Ana panel ────────────────────────────────────────────────────────────────
 class GPSAldatmaPanel(QWidget):
 
-    BASE_LAT = 39.9208
-    BASE_LON = 32.8541
-    BASE_ALT = 890.0
+    # Gerçek konum: sistemin kurulu olduğu yer (config'den — Elazığ)
+    BASE_LAT = config.HOME_LAT
+    BASE_LON = config.HOME_LON
+    BASE_ALT = config.HOME_ALT
+
+    # Sahte konumun sürükleneceği hedef (config'den — İstanbul)
+    TARGET_LAT = config.SPOOF_TARGET_LAT
+    TARGET_LON = config.SPOOF_TARGET_LON
 
     def __init__(self, state_manager=None):
         super().__init__()
@@ -113,6 +125,11 @@ class GPSAldatmaPanel(QWidget):
         self._active  = False
         self._sim_lat = self.BASE_LAT
         self._sim_lon = self.BASE_LON
+
+        # Kaymanın hedefe ne kadar ilerlediği: 0.0 = Elazığ, 1.0 = İstanbul.
+        # Aldatmanın anlaşılması için kayma UZAK bir hedefe doğru olmalı;
+        # yakın nokta seçilirse ekranda hareket fark edilmez.
+        self._drift_t = 0.0
 
         root = QVBoxLayout(self)
         root.setContentsMargins(0, 0, 0, 0)
@@ -141,6 +158,16 @@ class GPSAldatmaPanel(QWidget):
         coord_lay.addWidget(self._lat_disp)
         coord_lay.addWidget(self._lon_disp)
         coord_lay.addWidget(self._alt_disp)
+
+        # Gerçek konumdan ne kadar uzaklaştık — aldatmanın çalıştığının kanıtı
+        self._drift_lbl = QLabel("SAPMA: 0.0 km")
+        self._drift_lbl.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        self._drift_lbl.setStyleSheet(
+            "color:#f59e0b; background:#1c1917; border:1px solid #78350f; "
+            "border-radius:4px; padding:3px; "
+            "font-family:Consolas; font-size:9px; font-weight:bold;"
+        )
+        coord_lay.addWidget(self._drift_lbl)
         root.addWidget(coord_box)
 
         # ── Sapma ayarları ───────────────────────────────────────────────
@@ -310,14 +337,61 @@ class GPSAldatmaPanel(QWidget):
         self._lon_disp.set_coords(real_lon, fake_lon)
         self._alt_disp.set_coords(real_alt, fake_alt)
 
+        # Aldatmanın ne kadar ilerlediğini rakamla göster: gerçek konumdan
+        # kaç km uzaklaştık. Ekranda "çalışıyor" demenin en net yolu bu.
+        if hasattr(self, "_drift_lbl"):
+            km = self._haversine_km(self.BASE_LAT, self.BASE_LON,
+                                    self._sim_lat, self._sim_lon)
+            self._drift_lbl.setText(
+                f"SAPMA: {km:,.1f} km  →  {config.SPOOF_TARGET_NAME}"
+                f"   [%{self._drift_t * 100:.0f}]"
+            )
+
+    @staticmethod
+    def _haversine_km(lat1, lon1, lat2, lon2):
+        """İki koordinat arası yüzey mesafesi (km)."""
+        r = 6371.0
+        p1, p2 = math.radians(lat1), math.radians(lat2)
+        dp = math.radians(lat2 - lat1)
+        dl = math.radians(lon2 - lon1)
+        a = math.sin(dp / 2) ** 2 + math.cos(p1) * math.cos(p2) * math.sin(dl / 2) ** 2
+        return 2 * r * math.asin(math.sqrt(a))
+
     def _apply_drift(self):
-        if self._active and self._chk_drift.isChecked():
-            self._sim_lat += random.uniform(-0.0002, 0.0002)
-            self._sim_lon += random.uniform(-0.0002, 0.0002)
-            self._refresh_coord_display()
+        """
+        Sahte konumu Elazığ'dan İstanbul'a doğru kademeli sürükler.
+
+        Eskiden ±0.0002° (~20 m) rastgele titreşim yapıyordu: bu ne bir yöne
+        gidiyordu ne de ekranda fark ediliyordu. Aldatmanın görülmesi için
+        kayma YÖNLÜ ve UZAK bir hedefe doğru olmalı.
+        """
+        if not (self._active and self._chk_drift.isChecked()):
+            return
+
+        # Timer 1500 ms'de bir tetikleniyor; hedefe SPOOF_DRIFT_DURATION_S'de var
+        step = 1.5 / max(config.SPOOF_DRIFT_DURATION_S, 1.0)
+        self._drift_t = min(1.0, self._drift_t + step)
+
+        # Elazığ -> İstanbul doğrusal ara değer + gerçekçi görünsün diye ufak titreşim
+        base_lat = self.BASE_LAT + self._lat_spin.value()
+        base_lon = self.BASE_LON + self._lon_spin.value()
+        self._sim_lat = (base_lat + (self.TARGET_LAT - base_lat) * self._drift_t
+                         + random.uniform(-0.0008, 0.0008))
+        self._sim_lon = (base_lon + (self.TARGET_LON - base_lon) * self._drift_t
+                         + random.uniform(-0.0008, 0.0008))
+
+        self._refresh_coord_display()
+
+        # Yayılan sahte konum değişti — sistemin geri kalanı da görsün
+        if self.state_manager and hasattr(self.state_manager, "update_gps_spoof_state"):
+            self.state_manager.update_gps_spoof_state(
+                True, self._sim_lat, self._sim_lon,
+                self.BASE_ALT + self._alt_spin.value()
+            )
 
     def _on_start(self):
         self._active = True
+        self._drift_t = 0.0   # Her başlatmada kayma sıfırdan (Elazığ'dan) başlasın
         self.btn_start.setEnabled(False)
         self.btn_stop.setEnabled(True)
         self._status_lbl.setText("◉   GPS ALDATMA — AKTİF")

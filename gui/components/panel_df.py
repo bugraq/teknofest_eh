@@ -194,17 +194,42 @@ class DirectionFinderPanel(QWidget):
         )
         inner.addWidget(self._rms_lbl)
 
+        # Veri kaynağı rozeti: gösterilen açı gerçek anten ölçümü mü, yer tutucu mu.
+        # Ekranda açıkça yazmazsa simülasyon ölçüm sanılır — hakem önünde de,
+        # kendi ekibimiz içinde de yanlış anlaşılmaya açık.
+        self._src_lbl = QLabel("● VERİ YOK")
+        self._src_lbl.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        inner.addWidget(self._src_lbl)
+        self._set_source("none")
+
         outer.addWidget(box)
+
+    def _set_source(self, kind: str):
+        """kind: 'real' (anten ölçümü) | 'sim' (yer tutucu) | 'none' (veri yok)"""
+        styles = {
+            "real": ("● ANTEN ÖLÇÜMÜ", "#10b981", "#052e1a", "#065f46"),
+            "sim":  ("▲ SİMÜLASYON — ÖLÇÜM DEĞİL", "#f59e0b", "#1c1917", "#78350f"),
+            "none": ("● VERİ YOK", "#475569", "#0a0f1e", "#1e293b"),
+        }
+        text, fg, bg, border = styles.get(kind, styles["none"])
+        self._src_lbl.setText(text)
+        self._src_lbl.setStyleSheet(
+            f"color:{fg}; background:{bg}; border:1px solid {border}; "
+            f"border-radius:3px; padding:2px; "
+            f"font-family:Consolas; font-size:9px; font-weight:bold;"
+        )
 
     # ── Dışarıdan çağrılan API (main_window uyumlu) ──────────────────────────
     def update_bearing(self, bearing_deg: float, rms_deg: float,
-                       mod: str = "", snr: float = 0.0):
+                       mod: str = "", snr: float = 0.0, is_real: bool = False):
         self._compass.set_scanning(False)
         self._compass.update_bearing(bearing_deg, rms_deg)
         self._info_lbl.setText(f"Kaynak: {mod or '---'}   |   SNR: {snr:.1f} dB")
         self._rms_lbl.setText(f"RMS Doğruluk: ±{rms_deg:.1f}°")
+        self._set_source("real" if is_real else "sim")
 
     def set_scanning(self, scanning: bool):
         self._compass.set_scanning(scanning)
         if scanning:
             self._info_lbl.setText("Kaynak: ---   |   SNR: -- dB")
+            self._set_source("none")

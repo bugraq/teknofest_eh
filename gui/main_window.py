@@ -565,7 +565,7 @@ class MainWindow(QMainWindow):
         mid_lay   = QVBoxLayout(mid_frame)
         mid_lay.setContentsMargins(6, 6, 6, 6)
         mid_lay.setSpacing(8)
-        self.map_widget       = SignalMapPanel()
+        self.map_widget       = SignalMapPanel(state_manager=self.state_manager)
         self.waterfall_widget = WaterfallAndIQPlot()
         mid_lay.addWidget(self.map_widget,       stretch=2)
         mid_lay.addWidget(self.waterfall_widget, stretch=3)
@@ -886,11 +886,27 @@ class MainWindow(QMainWindow):
                                     else random.randint(50, 460))
         self.active_signal_timer = 50
 
-        # Yeni sinyal yeni bir yönden geliyor gibi davran (oynak yön)
-        self._true_bearing = random.uniform(0.0, 360.0)
+        # Haritaya hedef: TDoA/AOA çözücü gerçek koordinat yazdıysa ONU kullan.
+        # Yoksa sadece simülasyon modunda rastgele bir nokta göster.
+        st = None
+        if self.state_manager is not None:
+            try:
+                st = self.state_manager.get_state()
+            except Exception:
+                st = None
 
-        rx, ry = random.uniform(-8, 8), random.uniform(-8, 8)
-        self.map_widget.add_target(rx, ry)
+        if st is not None and st.get("has_target_fix"):
+            self.map_widget.set_target_latlon(
+                st["target_lat"], st["target_lon"],
+                err_m=st.get("target_err_m", 0.0),
+            )
+        elif config.SIMULATION_MODE:
+            # Yer tutucu: 1 km²'lik alan içinde kalsın (config.MAP_AREA_SIZE_M)
+            self._true_bearing = random.uniform(0.0, 360.0)
+            half_km = config.MAP_AREA_SIZE_M / 2000.0
+            rx = random.uniform(-half_km, half_km)
+            ry = random.uniform(-half_km, half_km)
+            self.map_widget.add_target(rx, ry)
 
         self.control_panel_widget.update_ai_results(mod, snr, conf)
         self.log_panel_widget.add_log(mod, snr, conf)
@@ -929,6 +945,44 @@ class MainWindow(QMainWindow):
         # Aldatma aktifken sahte konum gerçekçi biçimde gezsin (oynak konum)
         if active:
             self.tactical_map.wander_fake()
+
+    def _update_df_panel(self):
+        """
+        Pusulayı besler. Öncelik sırası:
+          1) Anten dizisinden gelen GERÇEK açı (state_manager.update_df_state)
+          2) Sinyal var ama DF donanımı yoksa -> SİM yer tutucu (sadece
+             config.SIMULATION_MODE açıkken; ekranda 'SİM' rozetiyle)
+          3) Hiçbiri yoksa -> tarama modu
+        """
+        st = None
+        if self.state_manager is not None:
+            try:
+                st = self.state_manager.get_state()
+            except Exception:
+                st = None
+
+        # 1) Gerçek anten verisi
+        if st is not None and st.get("has_real_df"):
+            self.df_panel.update_bearing(
+                float(st["df_bearing"]), float(st.get("df_rms", 2.0)),
+                self.active_signal_mod, self.active_signal_snr,
+                is_real=True,
+            )
+            return
+
+        # 2) Sinyal var, DF donanımı yok
+        if self.active_signal_timer > 0:
+            self.active_signal_timer -= 1
+            if config.SIMULATION_MODE:
+                self._true_bearing = (self._true_bearing + random.uniform(-1.5, 1.5)) % 360
+                shown = (self._true_bearing + random.gauss(0.0, 4.0)) % 360
+                self.df_panel.update_bearing(
+                    shown, 4.0, self.active_signal_mod, self.active_signal_snr
+                )
+                return
+
+        # 3) Ölçüm yok
+        self.df_panel.set_scanning(True)
 
     def _get_live_spectrum(self):
         """SDR'dan gelen gerçek (IQ, FFT) çiftini döndürür, veri yoksa None."""
@@ -985,15 +1039,7 @@ class MainWindow(QMainWindow):
         if live is not None:
             real_iq, real_fft = live
             self.waterfall_widget.update_plots(real_iq, real_fft)
-            if self.active_signal_timer > 0:
-                self.active_signal_timer -= 1
-                self._true_bearing = (self._true_bearing + random.uniform(-1.5, 1.5)) % 360
-                shown = (self._true_bearing + random.gauss(0.0, 4.0)) % 360
-                self.df_panel.update_bearing(
-                    shown, 4.0, self.active_signal_mod, self.active_signal_snr
-                )
-            else:
-                self.df_panel.set_scanning(True)
+            self._update_df_panel()
             self.time_ptr += 0.1
             return
 

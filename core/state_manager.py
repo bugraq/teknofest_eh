@@ -21,6 +21,28 @@ class StateManager:
         self.detected_freq_hz = 0.0
         self.detected_band = "—"
 
+        # --- YÖN BULMA (DF) ---
+        # Anten dizisi/AOA çözücü bunları doldurur. Doldurulmadıysa has_real_df
+        # False kalir ve arayuz gercek aci gostermez.
+        self.has_real_df    = False
+        self.df_bearing_deg = 0.0
+        self.df_rms_deg     = 0.0   # Açı belirsizliği (kaç derece oynuyor)
+
+        # --- HEDEF KONUMU ---
+        # DF açısı + mesafe kestiriminden ya da TDoA çözücüden gelir.
+        self.has_target_fix  = False
+        self.target_lat      = 0.0
+        self.target_lon      = 0.0
+        self.target_err_m    = 0.0  # Konum belirsizliği yarıçapı (metre)
+
+        # --- KENDİ KONUMUMUZ ---
+        # GPS alıcı fix verirse buraya yazılır; yoksa config.HOME_* kullanılır.
+        self.has_gps_fix = False
+        self.own_lat     = config.HOME_LAT
+        self.own_lon     = config.HOME_LON
+        self.own_alt     = config.HOME_ALT
+        self.gps_sats    = 0
+
         # --- Canlı Spektrum (waterfall bunu çizer) ---
         self.signal_present = False
         self.spectrum_db = None        # (FFT_SIZE,) dB, SDR'dan gelen gerçek spektrum
@@ -70,6 +92,51 @@ class StateManager:
             self.ai_confidence = 0.0
             self.detected_freq_hz = 0.0
             self.detected_band = "—"
+
+    def update_df_state(self, bearing_deg: float, rms_deg: float = 0.0):
+        """
+        Anten dizisi / AOA çözücü gerçek geliş açısını buraya yazar.
+
+        Bu çağrıldığı andan itibaren arayüzdeki pusula GERÇEK açıyı gösterir;
+        çağrılmazsa DF paneli tarama modunda kalır (uydurma açı üretmez).
+        rms_deg: ölçümün oynaklığı — pusuladaki belirsizlik konisi bu kadar açılır.
+        """
+        with self.lock:
+            self.has_real_df    = True
+            self.df_bearing_deg = float(bearing_deg) % 360.0
+            self.df_rms_deg     = float(rms_deg)
+
+    def clear_df_state(self):
+        """Anten verisi kesildiğinde çağrılır — pusula taramaya döner."""
+        with self.lock:
+            self.has_real_df = False
+
+    def update_target_position(self, lat: float, lon: float, err_m: float = 0.0):
+        """
+        Tespit edilen hedefin konumu (DF+mesafe ya da TDoA sonucu).
+        err_m: konum belirsizliği yarıçapı — haritada bu kadarlık daire çizilir.
+        """
+        with self.lock:
+            self.has_target_fix = True
+            self.target_lat     = float(lat)
+            self.target_lon     = float(lon)
+            self.target_err_m   = float(err_m)
+
+    def update_own_position(self, lat: float, lon: float, alt: float = 0.0,
+                            fix: bool = True, sats: int = 0):
+        """
+        GPS alıcıdan gelen KENDİ konumumuz.
+
+        DİKKAT: Bu gps_spoof_lat/lon ile karıştırılmamalı — o, karşıya
+        yaydığımız SAHTE konum. Bu ise bizim gerçek yerimiz ve haritadaki
+        her hedef hesabı buna dayanır.
+        """
+        with self.lock:
+            self.has_gps_fix = bool(fix)
+            self.own_lat     = float(lat)
+            self.own_lon     = float(lon)
+            self.own_alt     = float(alt)
+            self.gps_sats    = int(sats)
 
     def update_spectrum(self, psd_db, detection):
         """
@@ -124,6 +191,21 @@ class StateManager:
                 "peak_bin":         self.spectrum_peak_bin,
                 "noise_floor":      self.noise_floor_db,
                 "has_live_data":    self.has_live_data,
+                # Yön bulma (gerçek anten verisi)
+                "has_real_df":  self.has_real_df,
+                "df_bearing":   self.df_bearing_deg,
+                "df_rms":       self.df_rms_deg,
+                # Hedef konumu
+                "has_target_fix": self.has_target_fix,
+                "target_lat":     self.target_lat,
+                "target_lon":     self.target_lon,
+                "target_err_m":   self.target_err_m,
+                # Kendi konumumuz (GPS alıcı)
+                "has_gps_fix": self.has_gps_fix,
+                "own_lat":     self.own_lat,
+                "own_lon":     self.own_lon,
+                "own_alt":     self.own_alt,
+                "gps_sats":    self.gps_sats,
                 # ET Taarruz
                 "jam_active": self.jamming_active,
                 "freq":       self.target_freq,

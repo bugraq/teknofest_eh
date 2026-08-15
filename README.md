@@ -115,8 +115,57 @@ Veri yokken ekran boş kalır, DF tarama modunda bekler — uydurma tespit üret
 `True`: donanım yokken demo/geliştirme için sahte sinyal akıtır. Yarışmada açık
 unutulursa ekranda gerçek olmayan tespitler akar.
 
+### Coğrafi ayarlar
+
+```python
+HOME_LAT, HOME_LON      = 38.6748, 39.2226   # Elazığ — sistemin kurulu olduğu yer
+SPOOF_TARGET_LAT, ...   = 41.0082, 28.9784   # İstanbul — sahte konumun gideceği yer
+SPOOF_DRIFT_DURATION_S  = 120.0              # Kayma bu sürede hedefe varır
+MAP_AREA_SIZE_M         = 1000.0             # Harita 1 km²'lik alanı gösterir
+```
+
 Diğer ayarlar (örnekleme hızı, normalizasyon, sınıf isimleri, segment uzunluğu) da
 bu dosyadadır.
+
+## 5b. Gerçek donanımı bağlama (anten / GPS / DF)
+
+Arayüz gerçek ölçüm geldiğinde otomatik olarak ona geçer; GUI kodunda değişiklik
+gerekmez. Donanım tarafı sadece `StateManager`'a yazar:
+
+```python
+# Anten dizisi / AOA çözücüsü — gerçek geliş açısı
+state_manager.update_df_state(bearing_deg=127.5, rms_deg=1.8)
+state_manager.clear_df_state()          # veri kesilince
+
+# TDoA / AOA çözümü — hedefin mutlak konumu
+state_manager.update_target_position(lat=38.6801, lon=39.2290, err_m=45.0)
+
+# GPS alıcı — KENDİ konumumuz
+state_manager.update_own_position(lat=38.6748, lon=39.2226, alt=1067,
+                                  fix=True, sats=9)
+```
+
+Bu çağrılar yapılmadığı sürece:
+
+- Pusula **tarama modunda** kalır, uydurma açı üretmez.
+- Haritaya hedef düşmez.
+- Kendi konumumuz `config.HOME_*` (Elazığ) kabul edilir.
+
+`update_own_position()` ile `update_gps_spoof_state()` **karıştırılmamalıdır**:
+ilki bizim gerçek yerimiz, ikincisi karşıya yaydığımız sahte konum.
+
+### Ekrandaki veri kaynağı rozeti
+
+Yön bulma panelinde gösterilen açının nereden geldiği yazar:
+
+| Rozet | Anlamı |
+|-------|--------|
+| `● ANTEN ÖLÇÜMÜ` (yeşil) | Gerçek donanım verisi |
+| `▲ SİMÜLASYON — ÖLÇÜM DEĞİL` (turuncu) | Yer tutucu, `SIMULATION_MODE=True` iken |
+| `● VERİ YOK` (gri) | Ölçüm gelmiyor, tarama modunda |
+
+Bu rozet bilerek konuldu: simülasyon ekranda ölçüm gibi görünürse hem hakem
+önünde hem ekip içinde yanlış anlaşılır.
 
 > Sinyal/normalizasyon ayarlarını değiştirirseniz model yeniden eğitilmelidir.
 
