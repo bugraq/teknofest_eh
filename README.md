@@ -118,8 +118,8 @@ unutulursa ekranda gerçek olmayan tespitler akar.
 ### Coğrafi ayarlar
 
 ```python
-HOME_LAT, HOME_LON      = 38.6748, 39.2226   # Elazığ — sistemin kurulu olduğu yer
-SPOOF_TARGET_LAT, ...   = 41.0082, 28.9784   # İstanbul — sahte konumun gideceği yer
+HOME_LAT, HOME_LON      = 38.6810, 39.2264   # Elazığ merkez — sistemin kurulu olduğu yer
+SPOOF_TARGET_LAT, ...   = 38.6100, 39.2900   # Elazığ Havalimanı — sahte konumun gideceği yer (~9-10 km)
 SPOOF_DRIFT_DURATION_S  = 120.0              # Kayma bu sürede hedefe varır
 MAP_AREA_SIZE_M         = 1000.0             # Harita 1 km²'lik alanı gösterir
 ```

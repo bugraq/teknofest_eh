@@ -110,12 +110,16 @@ class _CoordDisplay(QWidget):
 # ─── Ana panel ────────────────────────────────────────────────────────────────
 class GPSAldatmaPanel(QWidget):
 
-    # Gerçek konum: sistemin kurulu olduğu yer (config'den — Elazığ)
+    # Gerçek konum yer tutucu/varsayılan: sistemin kurulu olduğu yer
+    # (config'den — Elazığ). GPS alıcı fix verirse state_manager.own_lat/lon/alt
+    # kullanılır (bkz. _refresh_real_position) — böylece "GERÇEK" tüm panellerde
+    # (harita, GNSS ekranı) aynı kaynaktan gelir.
     BASE_LAT = config.HOME_LAT
     BASE_LON = config.HOME_LON
     BASE_ALT = config.HOME_ALT
 
-    # Sahte konumun sürükleneceği hedef (config'den — İstanbul)
+    # Sahte konumun sürükleneceği hedef (config'den — Elazığ içinde/yakınında
+    # gerçekçi bir GNSS spoofing mesafesi, ~birkaç km)
     TARGET_LAT = config.SPOOF_TARGET_LAT
     TARGET_LON = config.SPOOF_TARGET_LON
 
@@ -123,12 +127,16 @@ class GPSAldatmaPanel(QWidget):
         super().__init__()
         self.state_manager = state_manager
         self._active  = False
-        self._sim_lat = self.BASE_LAT
-        self._sim_lon = self.BASE_LON
+        self._real_lat = self.BASE_LAT
+        self._real_lon = self.BASE_LON
+        self._real_alt = self.BASE_ALT
+        self._refresh_real_position()
+        self._sim_lat = self._real_lat
+        self._sim_lon = self._real_lon
 
-        # Kaymanın hedefe ne kadar ilerlediği: 0.0 = Elazığ, 1.0 = İstanbul.
-        # Aldatmanın anlaşılması için kayma UZAK bir hedefe doğru olmalı;
-        # yakın nokta seçilirse ekranda hareket fark edilmez.
+        # Kaymanın hedefe ne kadar ilerlediği: 0.0 = gerçek konum, 1.0 = hedef
+        # (config.SPOOF_TARGET_*, Elazığ içinde birkaç km ötede — gerçekçi bir
+        # GNSS spoofing menzili).
         self._drift_t = 0.0
 
         root = QVBoxLayout(self)
@@ -321,18 +329,40 @@ class GPSAldatmaPanel(QWidget):
         self._drift_timer.start(1500)
 
     # ── Mantık ────────────────────────────────────────────────────────────────
+    def _refresh_real_position(self):
+        """
+        GERÇEK konumu günceller: GPS alıcı fix verdiyse state_manager.own_lat/
+        own_lon/own_alt kullanılır (hardware/gps_reader.py bunu besler), yoksa
+        config.HOME_* (Elazığ) sabiti kullanılır. Böylece "GERÇEK" değeri
+        harita ve diğer panellerle aynı kaynaktan gelir.
+        """
+        if self.state_manager is not None:
+            try:
+                st = self.state_manager.get_state()
+                self._real_lat = float(st.get("own_lat", self.BASE_LAT))
+                self._real_lon = float(st.get("own_lon", self.BASE_LON))
+                self._real_alt = float(st.get("own_alt", self.BASE_ALT))
+                return
+            except Exception:
+                pass
+        self._real_lat = self.BASE_LAT
+        self._real_lon = self.BASE_LON
+        self._real_alt = self.BASE_ALT
+
     def _on_offset_change(self):
-        self._sim_lat = self.BASE_LAT + self._lat_spin.value()
-        self._sim_lon = self.BASE_LON + self._lon_spin.value()
+        self._sim_lat = self._real_lat + self._lat_spin.value()
+        self._sim_lon = self._real_lon + self._lon_spin.value()
         self._refresh_coord_display()
 
     def _refresh_coord_display(self):
-        real_lat = f"{self.BASE_LAT:.4f}°N"
-        real_lon = f"{self.BASE_LON:.4f}°E"
-        real_alt = f"{self.BASE_ALT:.0f} m"
+        self._refresh_real_position()
+
+        real_lat = f"{self._real_lat:.4f}°N"
+        real_lon = f"{self._real_lon:.4f}°E"
+        real_alt = f"{self._real_alt:.0f} m"
         fake_lat = f"{self._sim_lat:.4f}°N"
         fake_lon = f"{self._sim_lon:.4f}°E"
-        fake_alt = f"{self.BASE_ALT + self._alt_spin.value():.0f} m"
+        fake_alt = f"{self._real_alt + self._alt_spin.value():.0f} m"
         self._lat_disp.set_coords(real_lat, fake_lat)
         self._lon_disp.set_coords(real_lon, fake_lon)
         self._alt_disp.set_coords(real_alt, fake_alt)
@@ -340,7 +370,7 @@ class GPSAldatmaPanel(QWidget):
         # Aldatmanın ne kadar ilerlediğini rakamla göster: gerçek konumdan
         # kaç km uzaklaştık. Ekranda "çalışıyor" demenin en net yolu bu.
         if hasattr(self, "_drift_lbl"):
-            km = self._haversine_km(self.BASE_LAT, self.BASE_LON,
+            km = self._haversine_km(self._real_lat, self._real_lon,
                                     self._sim_lat, self._sim_lon)
             self._drift_lbl.setText(
                 f"SAPMA: {km:,.1f} km  →  {config.SPOOF_TARGET_NAME}"
@@ -359,11 +389,12 @@ class GPSAldatmaPanel(QWidget):
 
     def _apply_drift(self):
         """
-        Sahte konumu Elazığ'dan İstanbul'a doğru kademeli sürükler.
+        Sahte konumu gerçek konumdan config.SPOOF_TARGET_*'a doğru kademeli sürükler.
 
         Eskiden ±0.0002° (~20 m) rastgele titreşim yapıyordu: bu ne bir yöne
         gidiyordu ne de ekranda fark ediliyordu. Aldatmanın görülmesi için
-        kayma YÖNLÜ ve UZAK bir hedefe doğru olmalı.
+        kayma YÖNLÜ bir hedefe doğru olmalı — hedef gerçekçi bir GNSS spoofing
+        menzilinde (Elazığ içinde, birkaç km) tutuluyor.
         """
         if not (self._active and self._chk_drift.isChecked()):
             return
@@ -372,9 +403,9 @@ class GPSAldatmaPanel(QWidget):
         step = 1.5 / max(config.SPOOF_DRIFT_DURATION_S, 1.0)
         self._drift_t = min(1.0, self._drift_t + step)
 
-        # Elazığ -> İstanbul doğrusal ara değer + gerçekçi görünsün diye ufak titreşim
-        base_lat = self.BASE_LAT + self._lat_spin.value()
-        base_lon = self.BASE_LON + self._lon_spin.value()
+        # Gerçek konum -> hedef doğrusal ara değer + gerçekçi görünsün diye ufak titreşim
+        base_lat = self._real_lat + self._lat_spin.value()
+        base_lon = self._real_lon + self._lon_spin.value()
         self._sim_lat = (base_lat + (self.TARGET_LAT - base_lat) * self._drift_t
                          + random.uniform(-0.0008, 0.0008))
         self._sim_lon = (base_lon + (self.TARGET_LON - base_lon) * self._drift_t
@@ -386,12 +417,13 @@ class GPSAldatmaPanel(QWidget):
         if self.state_manager and hasattr(self.state_manager, "update_gps_spoof_state"):
             self.state_manager.update_gps_spoof_state(
                 True, self._sim_lat, self._sim_lon,
-                self.BASE_ALT + self._alt_spin.value()
+                self._real_alt + self._alt_spin.value()
             )
 
     def _on_start(self):
         self._active = True
-        self._drift_t = 0.0   # Her başlatmada kayma sıfırdan (Elazığ'dan) başlasın
+        self._drift_t = 0.0   # Her başlatmada kayma sıfırdan (gerçek konumdan) başlasın
+        self._refresh_real_position()
         self.btn_start.setEnabled(False)
         self.btn_stop.setEnabled(True)
         self._status_lbl.setText("◉   GPS ALDATMA — AKTİF")
@@ -403,7 +435,7 @@ class GPSAldatmaPanel(QWidget):
         if self.state_manager and hasattr(self.state_manager, "update_gps_spoof_state"):
             self.state_manager.update_gps_spoof_state(
                 True, self._sim_lat, self._sim_lon,
-                self.BASE_ALT + self._alt_spin.value()
+                self._real_alt + self._alt_spin.value()
             )
 
     def _on_stop(self):

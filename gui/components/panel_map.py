@@ -1,3 +1,4 @@
+import json
 import math
 
 from PyQt6.QtWidgets import QWidget, QVBoxLayout, QLabel
@@ -185,4 +186,78 @@ class SignalMapPanel(QWidget):
             }}
         }})();
         """
-        self.web_view.page().runJavaScript(js_code)
+        self.web_view.page().runJavaScript(js_code)
+
+    # ── KONUM BULMA (Ana Ekran'daki Yön Bulma paneli tetikler) ──────────────
+    def start_location_finding(self, real_lat, real_lon):
+        """
+        GERÇEK konumu sabit mavi marker olarak çizer ve haritayı geri çekip
+        (~10-15 km yarıçaplı SAHTE sıçramaları görebilecek şekilde) ortalar.
+
+        SAHTE bölge burada ÇİZİLMEZ — ilk konumu da update_fake_area() ile
+        gelir (main_window ilk tick'i start ile aynı anda tetikler).
+        """
+        if not getattr(self, "has_map_modules", False) or self.map_obj is None:
+            return
+        map_name = self.map_obj.get_name()
+        label = json.dumps(f"GERÇEK ({real_lat:.4f}°N, {real_lon:.4f}°E)")
+        js = f"""
+        (function() {{
+            if (typeof {map_name} === 'undefined') return;
+            {map_name}.setView([{real_lat}, {real_lon}], 11);
+            if (window.__lfRealMarker) {{ {map_name}.removeLayer(window.__lfRealMarker); }}
+            window.__lfRealMarker = L.circleMarker([{real_lat}, {real_lon}], {{
+                radius: 9, color: '#93c5fd', weight: 2,
+                fillColor: '#3b82f6', fillOpacity: 0.95
+            }}).addTo({map_name});
+            window.__lfRealMarker.bindTooltip({label}, {{
+                permanent: true, direction: 'right', offset: [10, 0]
+            }}).openTooltip();
+        }})();
+        """
+        self.web_view.page().runJavaScript(js)
+
+    def update_fake_area(self, fake_lat, fake_lon, radius_m=1500):
+        """
+        SAHTE bölgeyi (yarı saydam turuncu/kırmızı daire — KESİN NOKTA değil,
+        belirsizlik alanı) günceller; yoksa oluşturur. Etiket sadece "SAHTE" —
+        koordinat yazmaz.
+        """
+        if not getattr(self, "has_map_modules", False) or self.map_obj is None:
+            return
+        map_name = self.map_obj.get_name()
+        js = f"""
+        (function() {{
+            if (typeof {map_name} === 'undefined') return;
+            if (window.__lfFakeCircle) {{
+                window.__lfFakeCircle.setLatLng([{fake_lat}, {fake_lon}]);
+            }} else {{
+                window.__lfFakeCircle = L.circle([{fake_lat}, {fake_lon}], {{
+                    radius: {radius_m}, color: '#ef4444', weight: 2,
+                    fillColor: '#f97316', fillOpacity: 0.35
+                }}).addTo({map_name});
+                window.__lfFakeCircle.bindTooltip('SAHTE', {{
+                    permanent: true, direction: 'top'
+                }}).openTooltip();
+            }}
+        }})();
+        """
+        self.web_view.page().runJavaScript(js)
+
+    def stop_location_finding(self):
+        """KONUM BULMA modu durdurulunca GERÇEK/SAHTE katmanlarını temizler."""
+        if not getattr(self, "has_map_modules", False) or self.map_obj is None:
+            return
+        map_name = self.map_obj.get_name()
+        js = f"""
+        (function() {{
+            if (typeof {map_name} === 'undefined') return;
+            if (window.__lfRealMarker) {{
+                {map_name}.removeLayer(window.__lfRealMarker); window.__lfRealMarker = null;
+            }}
+            if (window.__lfFakeCircle) {{
+                {map_name}.removeLayer(window.__lfFakeCircle); window.__lfFakeCircle = null;
+            }}
+        }})();
+        """
+        self.web_view.page().runJavaScript(js)

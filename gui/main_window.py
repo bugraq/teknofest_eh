@@ -140,6 +140,43 @@ class _TacticalMap(QWidget):
         p.end()
 
 
+def _destination_point(lat, lon, bearing_deg, distance_km, r_km=6371.0):
+    """
+    Haversine "destination point": (lat,lon)'dan verilen bearing (derece, K'den
+    saat yönünde) ve distance_km kadar büyük daire üzerinde ilerleyince varılan
+    (lat2, lon2). KONUM BULMA'daki SAHTE bölge bu formülle üretilir.
+    """
+    phi1, lam1, theta = math.radians(lat), math.radians(lon), math.radians(bearing_deg)
+    delta = distance_km / r_km
+    phi2 = math.asin(
+        math.sin(phi1) * math.cos(delta) + math.cos(phi1) * math.sin(delta) * math.cos(theta)
+    )
+    lam2 = lam1 + math.atan2(
+        math.sin(theta) * math.sin(delta) * math.cos(phi1),
+        math.cos(delta) - math.sin(phi1) * math.sin(phi2),
+    )
+    lon2 = (math.degrees(lam2) + 540.0) % 360.0 - 180.0
+    return math.degrees(phi2), lon2
+
+
+def _bearing_between(lat1, lon1, lat2, lon2):
+    """(lat1,lon1) -> (lat2,lon2) ilk azimut (derece, 0-360, K'den saat yönünde)."""
+    phi1, phi2 = math.radians(lat1), math.radians(lat2)
+    dlon = math.radians(lon2 - lon1)
+    x = math.sin(dlon) * math.cos(phi2)
+    y = math.cos(phi1) * math.sin(phi2) - math.sin(phi1) * math.cos(phi2) * math.cos(dlon)
+    return (math.degrees(math.atan2(x, y)) + 360.0) % 360.0
+
+
+def _haversine_km(lat1, lon1, lat2, lon2, r_km=6371.0):
+    """İki koordinat arası büyük daire mesafesi (km)."""
+    p1, p2 = math.radians(lat1), math.radians(lat2)
+    dp = math.radians(lat2 - lat1)
+    dl = math.radians(lon2 - lon1)
+    a = math.sin(dp / 2) ** 2 + math.cos(p1) * math.cos(p2) * math.sin(dl / 2) ** 2
+    return 2 * r_km * math.asin(math.sqrt(a))
+
+
 # ─────────────────────────────────────────────────────────────────────────────
 #  ANA PENCERE
 # ─────────────────────────────────────────────────────────────────────────────
@@ -213,6 +250,19 @@ class MainWindow(QMainWindow):
         # ekrana gürültü eklenmiş hali basılır (RMS ~4°). Stabil değil — sahada olduğu gibi.
         self._true_bearing = random.uniform(0.0, 360.0)
 
+        # KONUM BULMA: DF panelindeki buton aktifken bu True olur; simulate_live_data
+        # ve _update_df_panel'in df_panel'e yazmasını durdurur — tek yazar olsun diye
+        # (bkz. _tick_location_finding).
+        self._loc_find_active   = False
+        self._loc_find_real_lat = config.HOME_LAT
+        self._loc_find_real_lon = config.HOME_LON
+        # Random walk durumu: SAHTE konumun BİR ÖNCEKİ adımı (bkz. _tick_location_finding)
+        self._loc_find_fake_lat = config.HOME_LAT
+        self._loc_find_fake_lon = config.HOME_LON
+        # Momentum: bir önceki adımda kullanılan bearing — yeni bearing buna yakın
+        # (±40°) seçilir, böylece yörünge zıt yönlere sıçramaz.
+        self._loc_find_prev_bearing = 0.0
+
         self.timer = QTimer()
         self.timer.timeout.connect(self.simulate_live_data)
         self.timer.start(30)
@@ -222,6 +272,11 @@ class MainWindow(QMainWindow):
         self._gnss_timer = QTimer()
         self._gnss_timer.timeout.connect(self._update_tactical_map)
         self._gnss_timer.start(400)
+
+        # KONUM BULMA: SAHTE bölge + DF ibresi bu timer'dan senkron beslenir
+        # (bkz. _tick_location_finding). Buton basılana kadar başlamaz.
+        self._loc_find_timer = QTimer()
+        self._loc_find_timer.timeout.connect(self._tick_location_finding)
 
     # ═══════════════════════════════════════════════════════════════════════
     #  NAVİGASYON ÇUBUĞU (ekranlar arası)
@@ -556,6 +611,7 @@ class MainWindow(QMainWindow):
         left_lay.setSpacing(8)
         self.log_panel_widget = SignalLogPanel()
         self.df_panel = DirectionFinderPanel()
+        self.df_panel.location_finding_toggled.connect(self._on_location_finding_toggled)
         left_lay.addWidget(self.log_panel_widget, stretch=1)
         left_lay.addWidget(self.df_panel)
         content_lay.addWidget(left_frame)
@@ -932,6 +988,115 @@ class MainWindow(QMainWindow):
         return (mod, float(st.get("snr", 0.0)), float(st.get("conf", 0.0)),
                 st.get("peak_bin"), float(st.get("detected_freq_hz", 0.0)))
 
+    # ── KONUM BULMA (Ana Ekran — DF panelindeki buton) ──────────────────────
+    def _on_location_finding_toggled(self, active: bool):
+        """
+        DF panelindeki "KONUM BULMA" butonuna basılınca çağrılır.
+
+        GERÇEK konum: state_manager.own_lat/own_lon/own_alt (yoksa config.HOME_*) —
+        StateManager zaten Elazığ merkez (38.6810°N, 39.2264°E) varsayılanıyla kurulu.
+        """
+        self._loc_find_active = active
+        if not active:
+            self._loc_find_timer.stop()
+            self.map_widget.stop_location_finding()
+            self.df_panel.set_scanning(True)
+            return
+
+        real_lat, real_lon = config.HOME_LAT, config.HOME_LON
+        if self.state_manager is not None:
+            try:
+                st = self.state_manager.get_state()
+                real_lat = float(st.get("own_lat", config.HOME_LAT))
+                real_lon = float(st.get("own_lon", config.HOME_LON))
+            except Exception:
+                pass
+        self._loc_find_real_lat = real_lat
+        self._loc_find_real_lon = real_lon
+
+        # İlk SAHTE konum: GERÇEK'ten 10-15 km, rastgele bearing (sonraki adımlar
+        # BİR ÖNCEKİ SAHTE konumdan yürüyecek — bkz. _tick_location_finding).
+        init_bearing = random.uniform(0.0, 360.0)
+        init_dist_km = random.uniform(10.0, 15.0)
+        fake_lat, fake_lon = _destination_point(real_lat, real_lon, init_bearing, init_dist_km)
+        self._loc_find_fake_lat = fake_lat
+        self._loc_find_fake_lon = fake_lon
+        self._loc_find_prev_bearing = init_bearing   # sonraki adımın momentum referansı
+
+        self.map_widget.start_location_finding(real_lat, real_lon)
+        self.map_widget.update_fake_area(fake_lat, fake_lon)
+        self.df_panel.update_bearing(
+            init_bearing, 2.0, "KONUM BULMA (SAHTE KAYNAK)", 0.0, is_real=False,
+        )
+        print(f"[KONUM BULMA] adim 0 (baslangic): SAHTE=({fake_lat:.4f}, {fake_lon:.4f})  "
+              f"GERCEK'ten mesafe={init_dist_km:.1f} km  bearing={init_bearing:.1f} deg")
+
+        self._loc_find_timer.start(2500)        # 2.5 sn'de bir yeni SAHTE konum (random walk)
+
+    def _tick_location_finding(self):
+        """
+        Random walk: yeni SAHTE konum BİR ÖNCEKİ SAHTE konumdan sadece 1-3 km
+        uzakta, ÖNCEKİ adımın bearing'ine yakın (momentum: ±40°) bir açıyla
+        hesaplanır — GERÇEK'ten değil. Böylece SAHTE nokta haritada yakın
+        çevresinde akıcı bir yörünge izler; zıt yönlere sıçramaz.
+
+        Sınır koruması (aynen korunuyor): GERÇEK'e olan toplam mesafe arttıkça
+        (25 km'den sonra kademeli, 45 km'de neredeyse tamamen) bearing GERÇEK
+        yönüne çekilir — bunu momentum bearing'iyle "pull" oranında harmanlayarak
+        yapıyoruz (tam rastgele DEĞİL, önceki yönden en kısa yaydan eve dönük
+        yöne kayar). 50 km'yi geçen çok nadir bir durum olursa konum GERÇEK'ten
+        tam 50 km'lik sınıra geri projekte edilir (sert üst sınır).
+
+        DF ibresi: GERÇEK'ten YENİ SAHTE konuma olan bearing — yürüyüş adımının
+        kendi bearing'i (momentum/pull karışımı) DEĞİL. Her iki gösterge de aynı
+        (real, yeni sahte) çiftinden, tek bir rastgele adımdan türetilir; ikinci
+        bir rastgele hesap yapılmaz.
+        """
+        prev_lat, prev_lon = self._loc_find_fake_lat, self._loc_find_fake_lon
+        real_lat, real_lon = self._loc_find_real_lat, self._loc_find_real_lon
+
+        # Momentum: yeni bearing önceki bearing'e yakın (±40°) — akıcı süzülme.
+        MOMENTUM_SPREAD_DEG = 40.0
+        momentum_bearing = (self._loc_find_prev_bearing
+                            + random.uniform(-MOMENTUM_SPREAD_DEG, MOMENTUM_SPREAD_DEG)) % 360.0
+
+        # GERÇEK'e olan mevcut mesafeye göre "eve dönüş" ağırlığı: 25 km'ye kadar
+        # pull=0 (momentum bearing aynen kullanılır), 45 km'de pull=1 (tam eve dönük).
+        PULL_START_KM, PULL_FULL_KM, HARD_CAP_KM = 25.0, 45.0, 50.0
+        dist_from_real = _haversine_km(real_lat, real_lon, prev_lat, prev_lon)
+        pull = max(0.0, min(1.0, (dist_from_real - PULL_START_KM) / (PULL_FULL_KM - PULL_START_KM)))
+        home_bearing = _bearing_between(prev_lat, prev_lon, real_lat, real_lon)
+
+        # momentum_bearing -> home_bearing arası en kısa yaydan "pull" kadar harmanla
+        diff = (home_bearing - momentum_bearing + 540.0) % 360.0 - 180.0
+        walk_bearing = (momentum_bearing + diff * pull) % 360.0
+
+        distance_km = random.uniform(1.0, 3.0)
+        fake_lat, fake_lon = _destination_point(prev_lat, prev_lon, walk_bearing, distance_km)
+
+        # Sert üst sınır: 50 km'yi geçerse GERÇEK'ten tam 50 km'lik sınıra projekte et.
+        dist_new = _haversine_km(real_lat, real_lon, fake_lat, fake_lon)
+        if dist_new > HARD_CAP_KM:
+            walk_bearing = _bearing_between(real_lat, real_lon, fake_lat, fake_lon)
+            fake_lat, fake_lon = _destination_point(real_lat, real_lon, walk_bearing, HARD_CAP_KM)
+            dist_new = HARD_CAP_KM
+
+        step_km = _haversine_km(prev_lat, prev_lon, fake_lat, fake_lon)
+        self._loc_find_fake_lat = fake_lat
+        self._loc_find_fake_lon = fake_lon
+        self._loc_find_prev_bearing = walk_bearing   # bir sonraki adımın momentum referansı
+
+        # DF ibresi: GERÇEK -> YENİ SAHTE (yürüyüş adımının bearing'i değil)
+        display_bearing = _bearing_between(real_lat, real_lon, fake_lat, fake_lon)
+        print(f"[KONUM BULMA] SAHTE=({fake_lat:.4f}, {fake_lon:.4f})  "
+              f"adim={step_km:.2f} km  GERCEK'ten toplam={dist_new:.1f} km  "
+              f"DF bearing={display_bearing:.1f} deg")
+
+        self.map_widget.update_fake_area(fake_lat, fake_lon)
+        self.df_panel.update_bearing(
+            display_bearing, 2.0, "KONUM BULMA (SAHTE KAYNAK)", 0.0, is_real=False,
+        )
+
     def _update_tactical_map(self):
         """GNSS taktik haritasını state_manager'daki GPS/GNSS aldatma durumuna bağlar."""
         if self.state_manager is None:
@@ -953,7 +1118,13 @@ class MainWindow(QMainWindow):
           2) Sinyal var ama DF donanımı yoksa -> SİM yer tutucu (sadece
              config.SIMULATION_MODE açıkken; ekranda 'SİM' rozetiyle)
           3) Hiçbiri yoksa -> tarama modu
+
+        KONUM BULMA aktifken bu fonksiyon df_panel'e HİÇ yazmaz — DF ibresi
+        _tick_location_finding tarafından besleniyor (bkz. orada).
         """
+        if self._loc_find_active:
+            return
+
         st = None
         if self.state_manager is not None:
             try:
@@ -1047,7 +1218,8 @@ class MainWindow(QMainWindow):
         #    açılışta uydurma dalga akmasın diye.
         if not config.SIMULATION_MODE:
             self.waterfall_widget.update_plots(np.zeros(512), np.zeros(512))
-            self.df_panel.set_scanning(True)
+            if not self._loc_find_active:
+                self.df_panel.set_scanning(True)
             return
 
         t     = np.linspace(self.time_ptr, self.time_ptr + 10, 512)
@@ -1071,15 +1243,18 @@ class MainWindow(QMainWindow):
             fake_fft[idx - width: idx + width] += self.active_signal_snr / 1.5
 
             # Yön Bulma: gerçek açı yavaşça gezsin, ekrana gürültülü (RMS~4°) hali bas
-            self._true_bearing = (self._true_bearing + random.uniform(-1.5, 1.5)) % 360
-            shown = (self._true_bearing + random.gauss(0.0, 4.0)) % 360
-            self.df_panel.update_bearing(
-                shown, 4.0, self.active_signal_mod, self.active_signal_snr
-            )
+            # (KONUM BULMA aktifken DF ibresini biz beslemeyiz — _tick_location_finding besler)
+            if not self._loc_find_active:
+                self._true_bearing = (self._true_bearing + random.uniform(-1.5, 1.5)) % 360
+                shown = (self._true_bearing + random.gauss(0.0, 4.0)) % 360
+                self.df_panel.update_bearing(
+                    shown, 4.0, self.active_signal_mod, self.active_signal_snr
+                )
         else:
             fake_iq = noise
             # Aktif sinyal yoksa DF tarama modunda
-            self.df_panel.set_scanning(True)
+            if not self._loc_find_active:
+                self.df_panel.set_scanning(True)
 
         self.waterfall_widget.update_plots(fake_iq, fake_fft)
         self.time_ptr += 0.1

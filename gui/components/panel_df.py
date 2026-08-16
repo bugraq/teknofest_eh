@@ -13,8 +13,8 @@ main_window bu paneli update_bearing() ile besler; sinyal yokken tarama modundad
 
 import math
 from collections import deque
-from PyQt6.QtWidgets import QWidget, QVBoxLayout, QLabel, QGroupBox
-from PyQt6.QtCore import Qt, QTimer, QPointF
+from PyQt6.QtWidgets import QWidget, QVBoxLayout, QLabel, QGroupBox, QPushButton
+from PyQt6.QtCore import Qt, QTimer, QPointF, pyqtSignal
 from PyQt6.QtGui import QPainter, QPen, QBrush, QColor, QFont, QFontMetrics
 
 
@@ -160,6 +160,11 @@ class _CompassWidget(QWidget):
 class DirectionFinderPanel(QWidget):
     """Ana ekranda kullanılan Yön Bulma paneli (pusula + bilgi satırları)."""
 
+    # main_window bu sinyali dinler: KONUM BULMA butonuna basılınca (True) /
+    # tekrar basılınca (False) tetiklenir. Gerçek->sahte konum hesabı ve harita
+    # güncellemesi main_window'da yapılır — bu panel yalnızca UI/tetikleyici.
+    location_finding_toggled = pyqtSignal(bool)
+
     def __init__(self, parent=None):
         super().__init__(parent)
         box = QGroupBox("YÖN BULMA (DF / AoA)")
@@ -202,7 +207,38 @@ class DirectionFinderPanel(QWidget):
         inner.addWidget(self._src_lbl)
         self._set_source("none")
 
+        # KONUM BULMA: GERÇEK konumdan rastgele (10-15 km) bir SAHTE bölgeye
+        # doğru bearing üretip haritada + burada gösteren demo modu.
+        # Tek toggle buton (START/STOP mantığı) — main_window sinyali dinler.
+        self._loc_find_btn = QPushButton("📍  KONUM BULMA — BAŞLAT")
+        self._loc_find_btn.setCheckable(True)
+        self._loc_find_btn.setFixedHeight(30)
+        self._loc_find_btn.setFont(QFont("Consolas", 9, QFont.Weight.Bold))
+        self._loc_find_btn.toggled.connect(self._on_loc_find_toggled)
+        self._apply_loc_find_style(False)
+        inner.addWidget(self._loc_find_btn)
+
         outer.addWidget(box)
+
+    def _on_loc_find_toggled(self, checked: bool):
+        self._apply_loc_find_style(checked)
+        self.location_finding_toggled.emit(checked)
+
+    def _apply_loc_find_style(self, active: bool):
+        if active:
+            self._loc_find_btn.setText("■  KONUM BULMA — AKTİF")
+            self._loc_find_btn.setStyleSheet(
+                "QPushButton { background:#450a0a; color:#ef4444; "
+                "border:2px solid #ef4444; border-radius:6px; letter-spacing:1px; }"
+                "QPushButton:hover { background:#7f1d1d; color:#fca5a5; }"
+            )
+        else:
+            self._loc_find_btn.setText("📍  KONUM BULMA — BAŞLAT")
+            self._loc_find_btn.setStyleSheet(
+                "QPushButton { background:#1e293b; color:#94a3b8; "
+                "border:1px solid #334155; border-radius:6px; letter-spacing:1px; }"
+                "QPushButton:hover { background:#334155; color:#e2e8f0; }"
+            )
 
     def _set_source(self, kind: str):
         """kind: 'real' (anten ölçümü) | 'sim' (yer tutucu) | 'none' (veri yok)"""

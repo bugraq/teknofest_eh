@@ -106,16 +106,16 @@ DETECTION_THRESHOLD_DB = 8.0 # Gürültü tabanının kaç dB üstü "sinyal var
 # ============================================================
 # Sistemin kurulu olduğu yer (GPS alıcı fix veremezse bu kullanılır).
 HOME_NAME = "Elazığ"
-HOME_LAT  = 38.6748
-HOME_LON  = 39.2226
-HOME_ALT  = 1067.0
+HOME_LAT  = 38.6810
+HOME_LON  = 39.2264
+HOME_ALT  = 950.0
 
 # GPS aldatmada sahte konumun sürükleneceği HEDEF.
-# Yakın bir nokta seçilirse aldatma ekranda fark edilmez; bilinçli olarak
-# uzak bir şehir seçiliyor ki kayma net görünsün (Elazığ -> İstanbul ~1000 km).
-SPOOF_TARGET_NAME = "İstanbul"
-SPOOF_TARGET_LAT  = 41.0082
-SPOOF_TARGET_LON  = 28.9784
+# Gerçekçi bir GNSS spoofing mesafesi için Elazığ İÇİNDE/yakınında bir nokta
+# kullanılıyor — şehirlerarası (~1000 km) sıçrama gerçekçi değildi.
+SPOOF_TARGET_NAME = "Elazığ Havalimanı Yönü (~9-10 km)"
+SPOOF_TARGET_LAT  = 38.6100
+SPOOF_TARGET_LON  = 39.2900
 
 # Sahte konum hedefe ne kadar sürede varsın (saniye). Küçültürsen hızlanır.
 SPOOF_DRIFT_DURATION_S = 120.0
